@@ -5,16 +5,44 @@ import ctypes
 import msvcrt
 
 import win32types
-import elevate
+import win32elevate
+import win32process
+
+# Globals for tracking our target
+target_handl = None 
+target_pid = None
+# {
+#    base_addres:{name, size, entrypoint}
+# }
+target_modules = []
+
+
+
+
+
+def handle_load_dll(pEvent):
+    global target_modules
+    modules = win32process.get_process_modules(target_pid)
+    # Lol this won't work since the snapshot lags behind the debug event
+    # TODO: looks like we will have to get the info from the event after all : (
+    if pEvent.u.LoadDll.lpBaseOfDll in modules.keys():
+        module_info = modules.get(pEvent.u.LoadDll.lpBaseOfDll,{})
+        target_modules.append(module_info)
+        print(f"DLL {module_info.get('name','NaN')} loaded at {module_info.get('base','NaN')} ")
+    else:
+        print(f"Unable to find DLL at adress: {hex(pEvent.u.LoadDll.lpBaseOfDll)}")
+
+
 
 
 def main():
+    global target_handl, target_pid
     # Get target path
     target_path = sys.argv[1]
     print(f"Debugging:{target_path}")
 
     # Get debug privs
-    if not elevate.se_debug():
+    if not win32elevate.se_debug():
         print("Failed to elevate privs, exiting!")
         sys.exit(1)
 
@@ -37,6 +65,8 @@ def main():
         sys.exit(1)
 
     hProcess = pProcessInfo.hProcess
+    target_handl = hProcess
+    target_pid = pProcessInfo.dwProcessId
     print(f"Process started with PID:{pProcessInfo.dwProcessId}")
     print(f"Press ENTER to quit debug loop...")
 
@@ -92,6 +122,7 @@ def main():
                     dwStatus = win32types.DBG_EXCEPTION_NOT_HANDLED
             elif pEvent.dwDebugEventCode == win32types.LOAD_DLL_DEBUG_EVENT:
                 print(f"LOAD_DLL_DEBUG_EVENT")
+                handle_load_dll(pEvent)
             elif pEvent.dwDebugEventCode == win32types.EXIT_PROCESS_DEBUG_EVENT:
                 print(f"EXIT_PROCESS_DEBUG_EVENT")
                 break

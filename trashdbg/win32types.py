@@ -14,8 +14,17 @@ BYTE      = c_ubyte
 WORD      = c_ushort
 DWORD     = c_ulong
 LONG      = c_ulong
-LPBYTE    = POINTER(c_ubyte)
+ULONG       = c_uint32
+CHAR        = c_char
+TCHAR       = CHAR  
+LPBYTE      = POINTER(BYTE)
+LPWORD      = POINTER(WORD)
+LPDWORD     = POINTER(DWORD)
+LPULONG     = POINTER(ULONG)
+LPLONG      = POINTER(LONG)
+PDWORD      = LPDWORD
 LPTSTR    = POINTER(c_char)
+LPWSTR    = c_wchar_p
 PWSTR     = c_wchar_p
 HANDLE    = c_void_p
 PVOID     = c_void_p
@@ -24,6 +33,11 @@ UINT_PTR  = c_ulong
 SIZE_T    = c_ulong
 HMODULE   = c_void_p
 NULL      = c_int(0)
+
+
+# Windows constants
+MAX_PATH = 260
+MAX_MODULE_NAME32 = 255
 
 
 # Process constants
@@ -42,6 +56,13 @@ PROCESS_VM_WRITE                    = 0x0020
 SYNCHRONIZE                         = 0x00100000
 PROCESS_ALL_ACCESS                  = 0x001F0FFF
 CREATE_SUSPENDED                    = 0x00000004
+
+
+# Module constants
+LIST_MODULES_DEFAULT    = 0x00
+LIST_MODULES_32BIT      = 0x01
+LIST_MODULES_64BIT      = 0x02
+LIST_MODULES_ALL        = 0x03
 
 
 # Debug constants
@@ -193,7 +214,7 @@ class _EXCEPTION_RECORD(Structure):
         ]
 
 
-# Exceptions
+# Debug event structs
 class EXCEPTION_DEBUG_INFO(Structure):
     _fields_ = [
         ("ExceptionRecord",    EXCEPTION_RECORD),
@@ -201,18 +222,121 @@ class EXCEPTION_DEBUG_INFO(Structure):
         ]
 
 
+# typedef struct _CREATE_THREAD_DEBUG_INFO {
+#   HANDLE hThread;
+#   LPVOID lpThreadLocalBase;
+#   LPTHREAD_START_ROUTINE lpStartAddress;
+# } CREATE_THREAD_DEBUG_INFO;
+class CREATE_THREAD_DEBUG_INFO(Structure):
+    _fields_ = [
+        ('hThread',             HANDLE),
+        ('lpThreadLocalBase',   LPVOID),
+        ('lpStartAddress',      LPVOID),
+    ]
+
+# typedef struct _CREATE_PROCESS_DEBUG_INFO {
+#   HANDLE hFile;
+#   HANDLE hProcess;
+#   HANDLE hThread;
+#   LPVOID lpBaseOfImage;
+#   DWORD dwDebugInfoFileOffset;
+#   DWORD nDebugInfoSize;
+#   LPVOID lpThreadLocalBase;
+#   LPTHREAD_START_ROUTINE lpStartAddress;
+#   LPVOID lpImageName;
+#   WORD fUnicode;
+# } CREATE_PROCESS_DEBUG_INFO;
+class CREATE_PROCESS_DEBUG_INFO(Structure):
+    _fields_ = [
+        ('hFile',                   HANDLE),
+        ('hProcess',                HANDLE),
+        ('hThread',                 HANDLE),
+        ('lpBaseOfImage',           LPVOID),
+        ('dwDebugInfoFileOffset',   DWORD),
+        ('nDebugInfoSize',          DWORD),
+        ('lpThreadLocalBase',       LPVOID),
+        ('lpStartAddress',          LPVOID),
+        ('lpImageName',             LPVOID),
+        ('fUnicode',                WORD),
+    ]
+
+# typedef struct _EXIT_THREAD_DEBUG_INFO {
+#   DWORD dwExitCode;
+# } EXIT_THREAD_DEBUG_INFO;
+class EXIT_THREAD_DEBUG_INFO(Structure):
+    _fields_ = [
+        ('dwExitCode',          DWORD),
+    ]
+
+# typedef struct _EXIT_PROCESS_DEBUG_INFO {
+#   DWORD dwExitCode;
+# } EXIT_PROCESS_DEBUG_INFO;
+class EXIT_PROCESS_DEBUG_INFO(Structure):
+    _fields_ = [
+        ('dwExitCode',          DWORD),
+    ]
+
+# typedef struct _LOAD_DLL_DEBUG_INFO {
+#   HANDLE hFile;
+#   LPVOID lpBaseOfDll;
+#   DWORD dwDebugInfoFileOffset;
+#   DWORD nDebugInfoSize;
+#   LPVOID lpImageName;
+#   WORD fUnicode;
+# } LOAD_DLL_DEBUG_INFO;
+class LOAD_DLL_DEBUG_INFO(Structure):
+    _fields_ = [
+        ('hFile',                   HANDLE),
+        ('lpBaseOfDll',             LPVOID),
+        ('dwDebugInfoFileOffset',   DWORD),
+        ('nDebugInfoSize',          DWORD),
+        ('lpImageName',             LPVOID),
+        ('fUnicode',                WORD),
+    ]
+
+# typedef struct _UNLOAD_DLL_DEBUG_INFO {
+#   LPVOID lpBaseOfDll;
+# } UNLOAD_DLL_DEBUG_INFO;
+class UNLOAD_DLL_DEBUG_INFO(Structure):
+    _fields_ = [
+        ('lpBaseOfDll',         LPVOID),
+    ]
+
+# typedef struct _OUTPUT_DEBUG_STRING_INFO {
+#   LPSTR lpDebugStringData;
+#   WORD fUnicode;
+#   WORD nDebugStringLength;
+# } OUTPUT_DEBUG_STRING_INFO;
+class OUTPUT_DEBUG_STRING_INFO(Structure):
+    _fields_ = [
+        ('lpDebugStringData',   LPVOID),    # don't use LPSTR
+        ('fUnicode',            WORD),
+        ('nDebugStringLength',  WORD),
+    ]
+
+# typedef struct _RIP_INFO {
+#     DWORD dwError;
+#     DWORD dwType;
+# } RIP_INFO, *LPRIP_INFO;
+class RIP_INFO(Structure):
+    _fields_ = [
+        ('dwError',             DWORD),
+        ('dwType',              DWORD),
+    ]
+
+
 # it populates this union appropriately
 class DEBUG_EVENT_UNION(Union):
     _fields_ = [
         ("Exception",         EXCEPTION_DEBUG_INFO),
-#        ("CreateThread",      CREATE_THREAD_DEBUG_INFO),
-#        ("CreateProcessInfo", CREATE_PROCESS_DEBUG_INFO),
-#        ("ExitThread",        EXIT_THREAD_DEBUG_INFO),
-#        ("ExitProcess",       EXIT_PROCESS_DEBUG_INFO),
-#        ("LoadDll",           LOAD_DLL_DEBUG_INFO),
-#        ("UnloadDll",         UNLOAD_DLL_DEBUG_INFO),
-#        ("DebugString",       OUTPUT_DEBUG_STRING_INFO),
-#        ("RipInfo",           RIP_INFO),
+       ("CreateThread",      CREATE_THREAD_DEBUG_INFO),
+       ("CreateProcessInfo", CREATE_PROCESS_DEBUG_INFO),
+       ("ExitThread",        EXIT_THREAD_DEBUG_INFO),
+       ("ExitProcess",       EXIT_PROCESS_DEBUG_INFO),
+       ("LoadDll",           LOAD_DLL_DEBUG_INFO),
+       ("UnloadDll",         UNLOAD_DLL_DEBUG_INFO),
+       ("DebugString",       OUTPUT_DEBUG_STRING_INFO),
+       ("RipInfo",           RIP_INFO),
         ]
 
 
@@ -370,3 +494,50 @@ class UNICODE_STRING(Structure):
         ("MaximumLength", c_ushort),
         ("Buffer", c_wchar_p),
     ]
+
+
+
+# typedef struct _MODULEINFO {
+#   LPVOID lpBaseOfDll;
+#   DWORD  SizeOfImage;
+#   LPVOID EntryPoint;
+# } MODULEINFO, *LPMODULEINFO;
+class MODULEINFO(Structure):
+    _fields_ = [
+        ("lpBaseOfDll",     LPVOID),    # remote pointer
+        ("SizeOfImage",     DWORD),
+        ("EntryPoint",      LPVOID),    # remote pointer
+]
+LPMODULEINFO = POINTER(MODULEINFO)
+
+
+
+
+# typedef struct tagMODULEENTRY32 {
+#   DWORD dwSize;
+#   DWORD th32ModuleID;
+#   DWORD th32ProcessID;
+#   DWORD GlblcntUsage;
+#   DWORD ProccntUsage;
+#   BYTE* modBaseAddr;
+#   DWORD modBaseSize;
+#   HMODULE hModule;
+#   TCHAR szModule[MAX_MODULE_NAME32 + 1];
+#   TCHAR szExePath[MAX_PATH];
+# } MODULEENTRY32,  *PMODULEENTRY32;
+class MODULEENTRY32(Structure):
+    _fields_ = [
+        ("dwSize",        DWORD),
+        ("th32ModuleID",  DWORD),
+        ("th32ProcessID", DWORD),
+        ("GlblcntUsage",  DWORD),
+        ("ProccntUsage",  DWORD),
+        ("modBaseAddr",   LPVOID),  # BYTE*
+        ("modBaseSize",   DWORD),
+        ("hModule",       HMODULE),
+        ("szModule",      TCHAR * (MAX_MODULE_NAME32 + 1)),
+        ("szExePath",     TCHAR * MAX_PATH),
+    ]
+LPMODULEENTRY32 = POINTER(MODULEENTRY32)
+
+

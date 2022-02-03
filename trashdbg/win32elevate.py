@@ -20,7 +20,7 @@ def se_debug():
             newPrivileges = [(id, win32security.SE_PRIVILEGE_ENABLED)]
             if not win32security.AdjustTokenPrivileges(htoken, 0, newPrivileges):
                 # Raise error
-                raise ElevateError(ctypes.WinError().strerro)
+                raise ElevateError(ctypes.WinError().strerror)
             else:
                 return True
         except Exception as e:
