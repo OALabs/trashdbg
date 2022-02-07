@@ -39,6 +39,9 @@ NULL      = c_int(0)
 MAX_PATH = 260
 MAX_MODULE_NAME32 = 255
 
+# File Api
+FILE_NAME_NORMALIZED = 0
+FileNameInfo = 2
 
 # Process constants
 PROCESS_CREATE_PROCESS              = 0x0080
@@ -137,7 +140,6 @@ MEM_IMAGE                 = 0x01000000
 MEM_MAPPED                = 0x00040000
 MEM_PRIVATE               = 0x00020000
 
-
 # Memory page permissions
 PAGE_NOACCESS             = 0x00000001
 PAGE_READONLY             = 0x00000002
@@ -155,6 +157,99 @@ MEM_COMMIT  = 0x1000
 MEM_RESERVE = 0x2000
 VIRTUAL_MEM = (MEM_COMMIT | MEM_RESERVE)
 
+
+READABLE =      (
+                PAGE_EXECUTE_READ       |
+                PAGE_EXECUTE_READWRITE  |
+                PAGE_EXECUTE_WRITECOPY  |
+                PAGE_READONLY           |
+                PAGE_READWRITE          |
+                PAGE_WRITECOPY
+                )
+
+WRITEABLE =     (
+                PAGE_EXECUTE_READWRITE  |
+                PAGE_EXECUTE_WRITECOPY  |
+                PAGE_READWRITE          |
+                PAGE_WRITECOPY
+                )
+
+COPY_ON_WRITE = (
+                PAGE_EXECUTE_WRITECOPY  |
+                PAGE_WRITECOPY
+                )
+
+EXECUTABLE =    (
+                PAGE_EXECUTE            |
+                PAGE_EXECUTE_READ       |
+                PAGE_EXECUTE_READWRITE  |
+                PAGE_EXECUTE_WRITECOPY
+                )
+
+EXECUTABLE_AND_WRITEABLE = (
+                            PAGE_EXECUTE_READWRITE  |
+                            PAGE_EXECUTE_WRITECOPY
+                            )
+
+
+
+# Error codes
+ERROR_SUCCESS                       = 0
+ERROR_INVALID_FUNCTION              = 1
+ERROR_FILE_NOT_FOUND                = 2
+ERROR_PATH_NOT_FOUND                = 3
+ERROR_ACCESS_DENIED                 = 5
+ERROR_INVALID_HANDLE                = 6
+ERROR_NOT_ENOUGH_MEMORY             = 8
+ERROR_INVALID_DRIVE                 = 15
+ERROR_NO_MORE_FILES                 = 18
+ERROR_BAD_LENGTH                    = 24
+ERROR_HANDLE_EOF                    = 38
+ERROR_HANDLE_DISK_FULL              = 39
+ERROR_NOT_SUPPORTED                 = 50
+ERROR_FILE_EXISTS                   = 80
+ERROR_INVALID_PARAMETER             = 87
+ERROR_BUFFER_OVERFLOW               = 111
+ERROR_DISK_FULL                     = 112
+ERROR_CALL_NOT_IMPLEMENTED          = 120
+ERROR_SEM_TIMEOUT                   = 121
+ERROR_INSUFFICIENT_BUFFER           = 122
+ERROR_INVALID_NAME                  = 123
+ERROR_MOD_NOT_FOUND                 = 126
+ERROR_PROC_NOT_FOUND                = 127
+ERROR_DIR_NOT_EMPTY                 = 145
+ERROR_BAD_THREADID_ADDR             = 159
+ERROR_BAD_ARGUMENTS                 = 160
+ERROR_BAD_PATHNAME                  = 161
+ERROR_ALREADY_EXISTS                = 183
+ERROR_INVALID_FLAG_NUMBER           = 186
+ERROR_ENVVAR_NOT_FOUND              = 203
+ERROR_FILENAME_EXCED_RANGE          = 206
+ERROR_MORE_DATA                     = 234
+
+WAIT_TIMEOUT                        = 258
+
+ERROR_NO_MORE_ITEMS                 = 259
+ERROR_PARTIAL_COPY                  = 299
+ERROR_INVALID_ADDRESS               = 487
+ERROR_THREAD_NOT_IN_PROCESS         = 566
+ERROR_CONTROL_C_EXIT                = 572
+ERROR_UNHANDLED_EXCEPTION           = 574
+ERROR_ASSERTION_FAILURE             = 668
+ERROR_WOW_ASSERTION                 = 670
+
+ERROR_DBG_EXCEPTION_NOT_HANDLED     = 688
+ERROR_DBG_REPLY_LATER               = 689
+ERROR_DBG_UNABLE_TO_PROVIDE_HANDLE  = 690
+ERROR_DBG_TERMINATE_THREAD          = 691
+ERROR_DBG_TERMINATE_PROCESS         = 692
+ERROR_DBG_CONTROL_C                 = 693
+ERROR_DBG_PRINTEXCEPTION_C          = 694
+ERROR_DBG_RIPEXCEPTION              = 695
+ERROR_DBG_CONTROL_BREAK             = 696
+ERROR_DBG_COMMAND_EXCEPTION         = 697
+ERROR_DBG_EXCEPTION_HANDLED         = 766
+ERROR_DBG_CONTINUE                  = 767
 
 
 class STARTUPINFO(Structure):

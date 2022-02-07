@@ -3,18 +3,20 @@ import os
 import time
 import ctypes
 import msvcrt
+import pefile
 
 import win32types
 import win32elevate
 import win32process
+import win32memory
 
 # Globals for tracking our target
 target_handl = None 
 target_pid = None
 # {
-#    base_addres:{name, size, entrypoint}
+#    base_addres:{name, path, base, end, size, entrypoint, exports{}}
 # }
-target_modules = []
+target_modules = {}
 
 
 
@@ -22,17 +24,90 @@ target_modules = []
 
 def handle_load_dll(pEvent):
     global target_modules
-    modules = win32process.get_process_modules(target_pid)
-    # Lol this won't work since the snapshot lags behind the debug event
-    # TODO: looks like we will have to get the info from the event after all : (
-    if pEvent.u.LoadDll.lpBaseOfDll in modules.keys():
-        module_info = modules.get(pEvent.u.LoadDll.lpBaseOfDll,{})
-        target_modules.append(module_info)
-        print(f"DLL {module_info.get('name','NaN')} loaded at {module_info.get('base','NaN')} ")
+
+    try:
+        # cfam solution for dll that is not fully loaded
+        file_path_buffer_size = win32types.MAX_PATH
+        file_path_buffer = ctypes.create_unicode_buffer(u"", win32types.MAX_PATH + 1)
+        ret = ctypes.windll.kernel32.GetFinalPathNameByHandleW(
+          pEvent.u.LoadDll.hFile,            # [in]  HANDLE hFile,
+          file_path_buffer,                       # [out] LPWSTR lpszFilePath,
+          file_path_buffer_size,                  # [in]  DWORD  cchFilePath,
+          win32types.FILE_NAME_NORMALIZED,                   # [in]  DWORD  dwFlags
+        )
+        if not ret:
+            print(f"Error LOAD_DLL_DEBUG_EVENT: GetFinalPathNameByHandleW failed with {ctypes.WinError().strerror}")
+            return
+        dll_path = file_path_buffer.value
+        # Load PE file from disk and get more info
+        pe = pefile.PE(dll_path, fast_load=True)
+        dll_base_address = pEvent.u.LoadDll.lpBaseOfDll
+        dll_entrypoint = pe.OPTIONAL_HEADER.AddressOfEntryPoint + dll_base_address
+        dll_end_address = pe.sections[-1].Misc_VirtualSize + pe.sections[-1].VirtualAddress + dll_base_address
+        dll_virtual_size = dll_end_address - dll_base_address
+        dll_name = os.path.basename(dll_path)
+
+        # Print some info about the DLL
+        print(f"DLL loaded {dll_path}")
+        print(f"\tName: {dll_name}")
+        print(f"\tBase: {hex(dll_base_address)}")
+        print(f"\tEnd: {hex(dll_end_address)}")
+        print(f"\tSize: {dll_virtual_size}")
+        print(f"\tEntry Point: {hex(dll_entrypoint)}")
+
+        # Get the DLL exports
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT']])
+        exports = {}
+        for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+            export_address = dll_base_address + exp.address
+            export_name = exp.name
+            export_ord = exp.ordinal
+            exports[export_address]  = {'name':export_name, 'ord':export_ord}
+
+        # Populate our DLL list
+        target_modules[dll_base_address] = {'name':dll_name, 
+                                            'path':dll_path, 
+                                            'base':dll_base_address, 
+                                            'end_address':dll_end_address,
+                                            'size':dll_virtual_size,
+                                            'entrypoint':dll_entrypoint, 
+                                            'exports':exports}
+    except Exception as e:
+        print(f"Error reading loaded DLL at base {hex(pEvent.u.LoadDll.lpBaseOfDll)}: {e}")
+
+    # Testing read memory
+    # This is just a temporary test to see if we can read the MZ
+    # from loaded DLLs
+    mz_addr = dll_base_address
+    mz_header = win32memory.read(target_handl, mz_addr, 2)
+    print(f"!!! TEST mz header {mz_header}")
+
+    # Testing memory write
+    # This is just a temporary test to see if we can
+    # write 'AA' to the DLL address of MZ + 4 bytes
+    # we don't want to overwrite the MZ since that is used by other
+    # functions to read the DLL but 4 bytes offset is not used by anything
+    mz_off_4_addr = dll_base_address + 4
+    pMemoryBasicInformation = win32memory.VirtualQueryEx(target_handl, mz_off_4_addr)
+    if (win32types.WRITEABLE & pMemoryBasicInformation.Protect) != 0:
+        # It is writable let's change the MZ
+        bytes_written = win32memory.write(target_handl, mz_off_4_addr, b'AA')
     else:
-        print(f"Unable to find DLL at adress: {hex(pEvent.u.LoadDll.lpBaseOfDll)}")
+        # Not writable let's fix this temporarily
+        old_protections = win32memory.VirtualProtectEx(target_handl, mz_off_4_addr, 2, win32types.PAGE_READWRITE)
+        bytes_written = win32memory.write(target_handl, mz_off_4_addr, b'AA')
+        new_protections = win32memory.VirtualProtectEx(target_handl, mz_off_4_addr, 2, old_protections)
 
 
+def handle_unload_dll(pEvent):
+    dll_base_address = pEvent.u.UnloadDll.lpBaseOfDll
+    dll_info = target_modules.get(dll_base_address, None)
+    if dll_info is None:
+        print(f"Error unloading DLL at base {pEvent.u.UnloadDll.lpBaseOfDll} - we aren't tracking this DLL in our target_modules")
+        return
+    # Print some info about the unloaded DLL
+    print(f"Unloaded DLL {dll_info.get('path','NaN')}")
+    target_modules.pop(dll_base_address)
 
 
 def main():
@@ -75,7 +150,7 @@ def main():
     # or the user presses ENTER
     while True:
         pEvent = win32types.DEBUG_EVENT()
-        dwStatus = win32types.DBG_CONTINUE
+        dwStatus = win32types.DBG_EXCEPTION_NOT_HANDLED
 
         # Wait for a debug event from the target
         # We timeout to allow the loop a chance to check for user input
@@ -134,6 +209,7 @@ def main():
                 print(f"EXIT_THREAD_DEBUG_EVENT")
             elif pEvent.dwDebugEventCode == win32types.UNLOAD_DLL_DEBUG_EVENT:
                 print(f"UNLOAD_DLL_DEBUG_EVENT")
+                handle_unload_dll(pEvent)
             elif pEvent.dwDebugEventCode == win32types.OUTPUT_DEBUG_STRING_EVENT:
                 print(f"OUTPUT_DEBUG_STRING_EVENT")
             elif pEvent.dwDebugEventCode == win32types.RIP_EVENT:
