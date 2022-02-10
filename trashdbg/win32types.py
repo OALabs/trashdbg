@@ -11,6 +11,7 @@ from ctypes import *
 
 # Map the Microsoft types to ctypes for clarity
 BYTE      = c_ubyte
+BOOL       = c_uint32
 WORD      = c_ushort
 DWORD     = c_ulong
 LONG      = c_ulong
@@ -116,6 +117,20 @@ THREAD_ALL_ACCESS         = 0x001F03FF
 
 TOKEN_ALL_ACCESS          = 0x000F01FF
 STILL_ACTIVE              = 0x00000103
+
+# Thread access rights for OpenThread
+THREAD_TERMINATE                 = 0x0001
+THREAD_SUSPEND_RESUME            = 0x0002
+THREAD_ALERT                     = 0x0004
+THREAD_GET_CONTEXT               = 0x0008
+THREAD_SET_CONTEXT               = 0x0010
+THREAD_SET_INFORMATION           = 0x0020
+THREAD_QUERY_INFORMATION         = 0x0040
+THREAD_SET_THREAD_TOKEN          = 0x0080
+THREAD_IMPERSONATE               = 0x0100
+THREAD_DIRECT_IMPERSONATION      = 0x0200
+THREAD_SET_LIMITED_INFORMATION   = 0x0400
+THREAD_QUERY_LIMITED_INFORMATION = 0x0800
 
 
 # Context flags 
@@ -250,6 +265,36 @@ ERROR_DBG_CONTROL_BREAK             = 696
 ERROR_DBG_COMMAND_EXCEPTION         = 697
 ERROR_DBG_EXCEPTION_HANDLED         = 766
 ERROR_DBG_CONTINUE                  = 767
+
+
+
+#--- CONTEXT structures and constants -----------------------------------------
+# The following values specify the type of access in the first parameter
+# of the exception record when the exception code specifies an access
+# violation.
+EXCEPTION_READ_FAULT        = 0     # exception caused by a read
+EXCEPTION_WRITE_FAULT       = 1     # exception caused by a write
+EXCEPTION_EXECUTE_FAULT     = 8     # exception caused by an instruction fetch
+
+CONTEXT_i386                = 0x00010000    # this assumes that i386 and
+CONTEXT_i486                = 0x00010000    # i486 have identical context records
+
+CONTEXT_CONTROL             = (CONTEXT_i386 | 0x00000001) # SS:SP, CS:IP, FLAGS, BP
+CONTEXT_INTEGER             = (CONTEXT_i386 | 0x00000002) # AX, BX, CX, DX, SI, DI
+CONTEXT_SEGMENTS            = (CONTEXT_i386 | 0x00000004) # DS, ES, FS, GS
+CONTEXT_FLOATING_POINT      = (CONTEXT_i386 | 0x00000008) # 387 state
+CONTEXT_DEBUG_REGISTERS     = (CONTEXT_i386 | 0x00000010) # DB 0-3,6,7
+CONTEXT_EXTENDED_REGISTERS  = (CONTEXT_i386 | 0x00000020) # cpu specific extensions
+
+CONTEXT_FULL = (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS)
+
+CONTEXT_ALL = (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS | \
+                CONTEXT_FLOATING_POINT | CONTEXT_DEBUG_REGISTERS | \
+                CONTEXT_EXTENDED_REGISTERS)
+
+SIZE_OF_80387_REGISTERS     = 80
+MAXIMUM_SUPPORTED_EXTENSION = 512
+
 
 
 class STARTUPINFO(Structure):
@@ -493,6 +538,100 @@ class CONTEXT_32(Structure):
         ("SegSs", DWORD),
         ("ExtendedRegisters", BYTE * 512),
 ]
+
+
+class CONTEXT(Structure):
+    _pack_ = 1
+
+    # Context Frame
+    #
+    #  This frame has a several purposes: 1) it is used as an argument to
+    #  NtContinue, 2) is is used to constuct a call frame for APC delivery,
+    #  and 3) it is used in the user level thread creation routines.
+    #
+    #  The layout of the record conforms to a standard call frame.
+
+    _fields_ = [
+
+        # The flags values within this flag control the contents of
+        # a CONTEXT record.
+        #
+        # If the context record is used as an input parameter, then
+        # for each portion of the context record controlled by a flag
+        # whose value is set, it is assumed that that portion of the
+        # context record contains valid context. If the context record
+        # is being used to modify a threads context, then only that
+        # portion of the threads context will be modified.
+        #
+        # If the context record is used as an IN OUT parameter to capture
+        # the context of a thread, then only those portions of the thread's
+        # context corresponding to set flags will be returned.
+        #
+        # The context record is never used as an OUT only parameter.
+
+        ('ContextFlags',        DWORD),
+
+        # This section is specified/returned if CONTEXT_DEBUG_REGISTERS is
+        # set in ContextFlags.  Note that CONTEXT_DEBUG_REGISTERS is NOT
+        # included in CONTEXT_FULL.
+
+        ('Dr0',                 DWORD),
+        ('Dr1',                 DWORD),
+        ('Dr2',                 DWORD),
+        ('Dr3',                 DWORD),
+        ('Dr6',                 DWORD),
+        ('Dr7',                 DWORD),
+
+        # This section is specified/returned if the
+        # ContextFlags word contains the flag CONTEXT_FLOATING_POINT.
+
+        ('FloatSave',           FLOATING_SAVE_AREA),
+
+        # This section is specified/returned if the
+        # ContextFlags word contains the flag CONTEXT_SEGMENTS.
+
+        ('SegGs',               DWORD),
+        ('SegFs',               DWORD),
+        ('SegEs',               DWORD),
+        ('SegDs',               DWORD),
+
+        # This section is specified/returned if the
+        # ContextFlags word contains the flag CONTEXT_INTEGER.
+
+        ('Edi',                 DWORD),
+        ('Esi',                 DWORD),
+        ('Ebx',                 DWORD),
+        ('Edx',                 DWORD),
+        ('Ecx',                 DWORD),
+        ('Eax',                 DWORD),
+
+        # This section is specified/returned if the
+        # ContextFlags word contains the flag CONTEXT_CONTROL.
+
+        ('Ebp',                 DWORD),
+        ('Eip',                 DWORD),
+        ('SegCs',               DWORD),         # MUST BE SANITIZED
+        ('EFlags',              DWORD),         # MUST BE SANITIZED
+        ('Esp',                 DWORD),
+        ('SegSs',               DWORD),
+
+        # This section is specified/returned if the ContextFlags word
+        # contains the flag CONTEXT_EXTENDED_REGISTERS.
+        # The format and contexts are processor specific.
+
+        ('ExtendedRegisters',   BYTE * MAXIMUM_SUPPORTED_EXTENSION),
+    ]
+
+    _ctx_debug   = ('Dr0', 'Dr1', 'Dr2', 'Dr3', 'Dr6', 'Dr7')
+    _ctx_segs    = ('SegGs', 'SegFs', 'SegEs', 'SegDs', )
+    _ctx_int     = ('Edi', 'Esi', 'Ebx', 'Edx', 'Ecx', 'Eax')
+    _ctx_ctrl    = ('Ebp', 'Eip', 'SegCs', 'EFlags', 'Esp', 'SegSs')
+
+  
+
+PCONTEXT = POINTER(CONTEXT)
+LPCONTEXT = PCONTEXT
+
 
 
 class THREADENTRY32(Structure):

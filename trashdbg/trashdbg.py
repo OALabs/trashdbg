@@ -13,13 +13,55 @@ import win32memory
 # Globals for tracking our target
 target_handl = None 
 target_pid = None
-# {
-#    base_addres:{name, path, base, end, size, entrypoint, exports{}}
-# }
+# base_addres:{name, path, base, end, size, entrypoint, exports{}}
 target_modules = {}
+# bp_address:{original_byte, singleshot}
+breakpoint_table = {}
+# bp_address:{singleshot}
+hardware_breakpoint_table = {}
+
+# Global excpetion for our debugger
+class TrashDBGError(Exception):
+    pass
 
 
+def add_software_breakpoint(bp_address, singleshot=True):
+    # Check to see if bp already exists
+    if bp_address in breakpoint_table.keys():
+        raise TrashDBGError(f"Breakpoint already exists")
+    # Read the byte we will replace with a bp
+    original_byte = win32memory.read(target_handl, bp_address, 1)
+    # Write our bp
+    bytes_written = win32memory.write(target_handl, bp_address, b'\xcc')
+    if bytes_written != 1:
+        raise TrashDBGError(f"Unable to write breakpoint at {hex(bp_address)}")
+    # Save our bp to the breakpoint table
+    breakpoint_table[bp_address] = {"original_byte":original_byte, "singleshot":singleshot}
+    return True
 
+
+def add_hardware_breakpoint(thead_id, bp_address, singleshot=True):
+    # Check to see if bp already exists
+    if bp_address in hardware_breakpoint_table.keys():
+        raise TrashDBGError(f"Hardware breakpoint already exists")
+    if len(hardware_breakpoint_table.keys()) == 4:
+        # We are only allowed max 4 hw breakpoints and it's full
+        raise TrashDBGError(f"Hardware breakpoint registers full")
+    # Set bp using context 
+    # Get the context 
+    dwThreadId = thead_id
+    # Get a thread handle
+    hThread = win32process.OpenThread(win32types.THREAD_ALL_ACCESS, False, dwThreadId)
+    # Get the thread context
+    context = win32process.GetThreadContext(hThread)
+    # Set debug regsiters
+    # TODO ******
+
+    set_context_status = win32process.SetThreadContext(hThread, context)
+
+    # Save our bp to the breakpoint table
+    hardware_breakpoint_table[bp_address] = {"singleshot":singleshot}
+    return True
 
 
 def handle_load_dll(pEvent):
@@ -56,6 +98,8 @@ def handle_load_dll(pEvent):
         print(f"\tEntry Point: {hex(dll_entrypoint)}")
 
         # Get the DLL exports
+        # TODO: For some reason we don't get all of the exports here
+        #       we are missing NtWriteFile from ntdll - something to do with max exports??
         pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT']])
         exports = {}
         for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
@@ -74,29 +118,7 @@ def handle_load_dll(pEvent):
                                             'exports':exports}
     except Exception as e:
         print(f"Error reading loaded DLL at base {hex(pEvent.u.LoadDll.lpBaseOfDll)}: {e}")
-
-    # Testing read memory
-    # This is just a temporary test to see if we can read the MZ
-    # from loaded DLLs
-    mz_addr = dll_base_address
-    mz_header = win32memory.read(target_handl, mz_addr, 2)
-    print(f"!!! TEST mz header {mz_header}")
-
-    # Testing memory write
-    # This is just a temporary test to see if we can
-    # write 'AA' to the DLL address of MZ + 4 bytes
-    # we don't want to overwrite the MZ since that is used by other
-    # functions to read the DLL but 4 bytes offset is not used by anything
-    mz_off_4_addr = dll_base_address + 4
-    pMemoryBasicInformation = win32memory.VirtualQueryEx(target_handl, mz_off_4_addr)
-    if (win32types.WRITEABLE & pMemoryBasicInformation.Protect) != 0:
-        # It is writable let's change the MZ
-        bytes_written = win32memory.write(target_handl, mz_off_4_addr, b'AA')
-    else:
-        # Not writable let's fix this temporarily
-        old_protections = win32memory.VirtualProtectEx(target_handl, mz_off_4_addr, 2, win32types.PAGE_READWRITE)
-        bytes_written = win32memory.write(target_handl, mz_off_4_addr, b'AA')
-        new_protections = win32memory.VirtualProtectEx(target_handl, mz_off_4_addr, 2, old_protections)
+    return win32types.DBG_CONTINUE
 
 
 def handle_unload_dll(pEvent):
@@ -108,6 +130,71 @@ def handle_unload_dll(pEvent):
     # Print some info about the unloaded DLL
     print(f"Unloaded DLL {dll_info.get('path','NaN')}")
     target_modules.pop(dll_base_address)
+    return win32types.DBG_CONTINUE
+
+
+def handle_software_breakpoint(pEvent):
+    exception_address = pEvent.u.Exception.ExceptionRecord.ExceptionAddress
+    if exception_address in breakpoint_table.keys():
+        # Handle our breakpoint
+        bp_info = breakpoint_table[exception_address]
+        print(f"Breakpoint hit at {hex(exception_address)}")
+        # Get the context 
+        dwThreadId = pEvent.dwThreadId
+        # Get a thread handle
+        hThread = win32process.OpenThread(win32types.THREAD_ALL_ACCESS, False, dwThreadId)
+        # Get the thread context
+        context = win32process.GetThreadContext(hThread)
+        print(f"EIP: {hex(context.Eip)}")
+        # Set EIP back one byte for the bp
+        context.Eip = context.Eip - 1
+        set_context_status = win32process.SetThreadContext(hThread, context)
+        if bp_info.get("singleshot", True):
+            # This is a single shot bp so remove it
+            # Restore original byte
+            original_byte = bp_info.get("original_byte", None)
+            if original_byte is None:
+                raise TrashDBGError("Breakpoint handling error, no original byte to restore")
+            bytes_written = win32memory.write(target_handl, exception_address, original_byte)
+            if bytes_written != 1:
+                raise TrashDBGError("Breakpoint handling error, unable to restore original byte")
+            # Remove the breakpoint entry from the table
+            breakpoint_table.pop(exception_address)
+            print("Removed bp continuing execution")
+        else:
+            # We need to execute and then restore the bp 
+            raise TrashDBGError("ERROR TODO: we haven't handled non-singleshot bp yet")
+        dwStatus = win32types.DBG_CONTINUE
+    else:
+        # SUPER HACK!!
+        # use this free bp to set our own bp
+        # Test breakpoint -- set a bp on ntdll.dll : ZwWriteFile
+        if exception_address == 0x77c41ba2:
+            # Find ntdll
+            for module_address in target_modules.keys():
+                if target_modules[module_address].get('name','') == 'ntdll.dll':
+                    exports =  target_modules[module_address].get('exports',{})
+                    for export_address in exports.keys():
+                        if b'ZwWriteFile'.lower() == exports[export_address].get('name', b'').lower():
+                            print("Adding bp on ZwWriteFile")
+                            bp_set_status = add_software_breakpoint(export_address)
+        # Not our breakpoint don't handle
+        print(f"Not our breakpoint at {hex(exception_address)}")
+        dwStatus = win32types.DBG_EXCEPTION_NOT_HANDLED
+    return dwStatus
+
+
+def handle_hardware_breakpoint(pEvent):
+    exception_address = pEvent.u.Exception.ExceptionRecord.ExceptionAddress
+    if exception_address in hardware_breakpoint_table.keys():
+        # Handle our breakpoint
+        print(f"Hardware Breakpoint hit at {hex(exception_address)}")
+        dwStatus = win32types.DBG_CONTINUE
+    else:
+        # Not our breakpoint don't handle
+        print(f"Not our hardware breakpoint at {hex(exception_address)}")
+        dwStatus = win32types.DBG_EXCEPTION_NOT_HANDLED
+    return dwStatus
 
 
 def main():
@@ -170,7 +257,7 @@ def main():
                     # Soft breakpoint
                     print(f"Software breakpoint at {hex(exception_address)}")
                     # We are not handling this right now
-                    dwStatus = win32types.DBG_EXCEPTION_NOT_HANDLED
+                    dwStatus = handle_software_breakpoint(pEvent)
                 elif exception_code == win32types.EXCEPTION_GUARD_PAGE: 
                     print(f"GUARD_PAGE exception at {hex(exception_address)}")
                     # We are not handling this right now
@@ -179,7 +266,7 @@ def main():
                     # Hardware breakpoint
                     print(f"Hardware breakpoint at {hex(exception_address)}")
                     # We are not handling this right now
-                    dwStatus = win32types.DBG_EXCEPTION_NOT_HANDLED
+                    dwStatus = handle_hardware_breakpoint(pEvent)
                 elif exception_code == win32types.STATUS_WX86_BREAKPOINT:
                     # Hardware breakpoint
                     print(f"WOW64 software breakpoint (32bit code) - why are you useing x64 debugger for 32-bit code??")
@@ -197,7 +284,7 @@ def main():
                     dwStatus = win32types.DBG_EXCEPTION_NOT_HANDLED
             elif pEvent.dwDebugEventCode == win32types.LOAD_DLL_DEBUG_EVENT:
                 print(f"LOAD_DLL_DEBUG_EVENT")
-                handle_load_dll(pEvent)
+                dwStatus = handle_load_dll(pEvent)
             elif pEvent.dwDebugEventCode == win32types.EXIT_PROCESS_DEBUG_EVENT:
                 print(f"EXIT_PROCESS_DEBUG_EVENT")
                 break
@@ -209,7 +296,7 @@ def main():
                 print(f"EXIT_THREAD_DEBUG_EVENT")
             elif pEvent.dwDebugEventCode == win32types.UNLOAD_DLL_DEBUG_EVENT:
                 print(f"UNLOAD_DLL_DEBUG_EVENT")
-                handle_unload_dll(pEvent)
+                dwStatus = handle_unload_dll(pEvent)
             elif pEvent.dwDebugEventCode == win32types.OUTPUT_DEBUG_STRING_EVENT:
                 print(f"OUTPUT_DEBUG_STRING_EVENT")
             elif pEvent.dwDebugEventCode == win32types.RIP_EVENT:

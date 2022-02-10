@@ -92,13 +92,53 @@ def get_module_from_base(hProcess, dwBaseAddress):
     print(module_list)
 
 
+# BOOL WINAPI GetThreadContext(
+#   __in     HANDLE hThread,
+#   __inout  LPCONTEXT lpContext
+# );
+def GetThreadContext(hThread, ContextFlags = None):
+    _GetThreadContext = ctypes.windll.kernel32.GetThreadContext
+    _GetThreadContext.argtypes = [win32types.HANDLE, win32types.LPCONTEXT]
+    _GetThreadContext.restype  = bool
+    _GetThreadContext.errcheck = win32utils.RaiseIfZero
+
+    if ContextFlags is None:
+        ContextFlags = win32types.CONTEXT_ALL | win32types.CONTEXT_i386
+    Context = win32types.CONTEXT()
+    Context.ContextFlags = ContextFlags
+    _GetThreadContext(hThread, ctypes.byref(Context))
+    return Context
 
 
+# BOOL WINAPI SetThreadContext(
+#   __in  HANDLE hThread,
+#   __in  const CONTEXT* lpContext
+# );
+def SetThreadContext(hThread, lpContext):
+    _SetThreadContext = ctypes.windll.kernel32.SetThreadContext
+    _SetThreadContext.argtypes = [win32types.HANDLE, win32types.LPCONTEXT]
+    _SetThreadContext.restype  = bool
+    _SetThreadContext.errcheck = win32utils.RaiseIfZero
+    status = _SetThreadContext(hThread, ctypes.byref(lpContext))
+    if status == 0:
+        raise ctypes.WinError()
+    return status
 
 
+# HANDLE WINAPI OpenThread(
+#   __in  DWORD dwDesiredAccess,
+#   __in  BOOL bInheritHandle,
+#   __in  DWORD dwThreadId
+# );
+def OpenThread(dwDesiredAccess, bInheritHandle, dwThreadId):
+    _OpenThread = ctypes.windll.kernel32.OpenThread
+    _OpenThread.argtypes = [win32types.DWORD, win32types.BOOL, win32types.DWORD]
+    _OpenThread.restype  = win32types.HANDLE
 
-
-
+    hThread = _OpenThread(dwDesiredAccess, bool(bInheritHandle), dwThreadId)
+    if hThread == win32types.NULL:
+        raise ctypes.WinError()
+    return hThread
 
 
 

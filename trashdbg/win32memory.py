@@ -41,7 +41,7 @@ def read(hProcess, lpBaseAddress, nSize):
 #   __in   SIZE_T nSize,
 #   __out  SIZE_T* lpNumberOfBytesWritten
 # );
-def write(hProcess, lpBaseAddress, lpBuffer):
+def WriteProcessMemory(hProcess, lpBaseAddress, lpBuffer):
     _WriteProcessMemory = ctypes.windll.kernel32.WriteProcessMemory
     _WriteProcessMemory.argtypes = [win32types.HANDLE, 
                                     win32types.LPVOID, 
@@ -101,6 +101,27 @@ def VirtualProtectEx(hProcess, lpAddress, dwSize, flNewProtect = win32types.PAGE
     flOldProtect = win32types.DWORD(0)
     _VirtualProtectEx(hProcess, lpAddress, dwSize, flNewProtect, ctypes.byref(flOldProtect))
     return flOldProtect.value
+
+
+
+def write(hProcess, lpAddress, lpBuffer):
+    # TODO: this should work without the mem change wrapper
+    #       but it doesn'!! WHY??
+    #
+    #       https://devblogs.microsoft.com/oldnewthing/20181206-00/?p=100415
+    #
+    bytes_written = 0
+    pMemoryBasicInformation = VirtualQueryEx(hProcess, lpAddress)
+    if (win32types.WRITEABLE & pMemoryBasicInformation.Protect) != 0:
+        # It is writable let's write
+        bytes_written = WriteProcessMemory(hProcess, lpAddress, lpBuffer)
+    else:
+        # Not writable let's fix this temporarily
+        old_protections = VirtualProtectEx(hProcess, lpAddress, len(lpBuffer), win32types.PAGE_READWRITE)
+        bytes_written = WriteProcessMemory(hProcess, lpAddress, lpBuffer)
+        new_protections = VirtualProtectEx(hProcess, lpAddress, len(lpBuffer), old_protections)
+    return bytes_written
+
 
 
 
