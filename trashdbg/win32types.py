@@ -541,6 +541,20 @@ class CONTEXT_32(Structure):
 
 
 class CONTEXT(Structure):
+
+    # This this bad and I feel bad
+    def __str__(self):
+        return "{}: {{{}}}".format(
+                                   self.__class__.__name__,
+                                   ", ".join(["{}: {}\n".format(  field[0],
+                                                                hex(getattr(self,field[0])) if 
+                                                                    type(getattr(self,field[0])) == int 
+                                                                    else getattr(self,field[0])  
+
+                                                             ) 
+                                                            for field in self._fields_])
+                                  )
+
     _pack_ = 1
 
     # Context Frame
@@ -773,5 +787,9 @@ class MODULEENTRY32(Structure):
         ("szExePath",     TCHAR * MAX_PATH),
     ]
 LPMODULEENTRY32 = POINTER(MODULEENTRY32)
+
+
+
+
 
 

@@ -141,6 +141,15 @@ def OpenThread(dwDesiredAccess, bInheritHandle, dwThreadId):
     return hThread
 
 
+# BOOL WINAPI CloseHandle(
+#   __in  HANDLE hObject
+# );
+def CloseHandle(hHandle):
+    _CloseHandle = ctypes.windll.kernel32.CloseHandle
+    _CloseHandle.argtypes = [win32types.HANDLE]
+    _CloseHandle.restype  = bool
+    _CloseHandle.errcheck = win32utils.RaiseIfZero
+    _CloseHandle(hHandle)
 
 
 

@@ -9,16 +9,21 @@ import win32types
 import win32elevate
 import win32process
 import win32memory
+import win32debug
 
 # Globals for tracking our target
 target_handl = None 
 target_pid = None
-# base_addres:{name, path, base, end, size, entrypoint, exports{}}
+# base_addres:{name, path, base, end, size, entrypoint, exports[]}
 target_modules = {}
 # bp_address:{original_byte, singleshot}
 breakpoint_table = {}
-# bp_address:{singleshot}
+# bp_reg_index:{address':bp_address, 'type':bp_type,  'size':bp_size}
+# to make things easy ware setting hw breakpoints across all threads
+# no thread specific breakpoints
 hardware_breakpoint_table = {}
+# thread tracker
+process_threads = []
 
 # Global excpetion for our debugger
 class TrashDBGError(Exception):
@@ -40,27 +45,35 @@ def add_software_breakpoint(bp_address, singleshot=True):
     return True
 
 
-def add_hardware_breakpoint(thead_id, bp_address, singleshot=True):
+def add_hardware_breakpoint(bp_address, bp_reg_index, bp_type, bp_size):
     # Check to see if bp already exists
-    if bp_address in hardware_breakpoint_table.keys():
-        raise TrashDBGError(f"Hardware breakpoint already exists")
+    for current_bp_reg in hardware_breakpoint_table:
+        if current_bp_reg.get('address', None) == bp_address:
+            # The address is set
+            raise TrashDBGError(f"Hardware breakpoint already exists in Dr{current_bp_reg}")
     if len(hardware_breakpoint_table.keys()) == 4:
         # We are only allowed max 4 hw breakpoints and it's full
         raise TrashDBGError(f"Hardware breakpoint registers full")
-    # Set bp using context 
-    # Get the context 
-    dwThreadId = thead_id
-    # Get a thread handle
-    hThread = win32process.OpenThread(win32types.THREAD_ALL_ACCESS, False, dwThreadId)
-    # Get the thread context
-    context = win32process.GetThreadContext(hThread)
-    # Set debug regsiters
-    # TODO ******
-
-    set_context_status = win32process.SetThreadContext(hThread, context)
-
-    # Save our bp to the breakpoint table
-    hardware_breakpoint_table[bp_address] = {"singleshot":singleshot}
+    # Set bp for each thread
+    for thread_id in process_threads:
+        print(f"Set hardware breakpoint for thread {thread_id} at {hex(bp_address)}")
+        # Get a thread handle
+        hThread = win32process.OpenThread(win32types.THREAD_ALL_ACCESS, False, thread_id)
+        # Get the thread context
+        context = win32process.GetThreadContext(hThread)
+        # Set debug regsiters
+        # TODO ******
+        # https://bitbucket.org/mrexodia/enigmahwid/src/master/hwbp.cpp
+        # Assumptions
+        # - set the dr0-3 register with bp address
+        # - set dr7 struct[dr0-3] with MODE_LOCAL, bp size, bp type
+        #print(context)
+        win32debug.DebugRegister.set_bp(context, bp_reg_index, bp_address, bp_type, bp_size)
+        set_context_status = win32process.SetThreadContext(hThread, context)
+        # Save our bp to the breakpoint table
+        hardware_breakpoint_table[bp_reg_index] = {'address':bp_address, 'type':bp_type,  'size':bp_size}
+        # Close our thread handle
+        win32process.CloseHandle(hThread)
     return True
 
 
@@ -101,12 +114,12 @@ def handle_load_dll(pEvent):
         # TODO: For some reason we don't get all of the exports here
         #       we are missing NtWriteFile from ntdll - something to do with max exports??
         pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT']])
-        exports = {}
+        exports = []
         for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
             export_address = dll_base_address + exp.address
             export_name = exp.name
             export_ord = exp.ordinal
-            exports[export_address]  = {'name':export_name, 'ord':export_ord}
+            exports.append({'name':export_name, 'ord':export_ord, 'address':export_address})
 
         # Populate our DLL list
         target_modules[dll_base_address] = {'name':dll_name, 
@@ -118,6 +131,25 @@ def handle_load_dll(pEvent):
                                             'exports':exports}
     except Exception as e:
         print(f"Error reading loaded DLL at base {hex(pEvent.u.LoadDll.lpBaseOfDll)}: {e}")
+    # TEST: If the module is ntdll then add a bp on ZwWriteFile
+    # Find ntdll
+    if dll_name == 'ntdll.dll':
+        for module_address in target_modules.keys():
+            if target_modules[module_address].get('name','') == 'ntdll.dll':
+                exports =  target_modules[module_address].get('exports',[])
+                for export in exports:
+                    if b'ZwWriteFile'.lower() == export.get('name', b'').lower():
+                        export_address = export.get('address', None)
+                        if export_address is None:
+                            raise TrashDBGError(f"Export address for ZwWriteFile is None")
+                        # print("Adding bp on ZwWriteFile")
+                        # bp_set_status = add_software_breakpoint(export_address)
+                        print(f"Setting hw breakpoint")
+                        add_hardware_breakpoint(#0x77C3C0A8, 
+                                                export_address,
+                                                0, 
+                                                win32debug.BREAK_ON_EXECUTION, 
+                                                win32debug.WATCH_BYTE)
     return win32types.DBG_CONTINUE
 
 
@@ -169,15 +201,30 @@ def handle_software_breakpoint(pEvent):
         # SUPER HACK!!
         # use this free bp to set our own bp
         # Test breakpoint -- set a bp on ntdll.dll : ZwWriteFile
+        # In x64dbg it's called 'System breakpoint'
+        # NOTE: The hardware bp registers are restored after this bp
+        # so we cannot add a hw bp here
         if exception_address == 0x77c41ba2:
-            # Find ntdll
-            for module_address in target_modules.keys():
-                if target_modules[module_address].get('name','') == 'ntdll.dll':
-                    exports =  target_modules[module_address].get('exports',{})
-                    for export_address in exports.keys():
-                        if b'ZwWriteFile'.lower() == exports[export_address].get('name', b'').lower():
-                            print("Adding bp on ZwWriteFile")
-                            bp_set_status = add_software_breakpoint(export_address)
+            print("System breakpoint")
+            # # Find ntdll
+            # for module_address in target_modules.keys():
+            #     if target_modules[module_address].get('name','') == 'ntdll.dll':
+            #         exports =  target_modules[module_address].get('exports',[])
+            #         for export in exports:
+            #             if b'ZwWriteFile'.lower() == export.get('name', b'').lower():
+            #                 export_address = export.get('address', None)
+            #                 if export_address is None:
+            #                     raise TrashDBGError(f"Export address for ZwWriteFile is None")
+            #                 # print("Adding bp on ZwWriteFile")
+            #                 # bp_set_status = add_software_breakpoint(export_address)
+            #                 print(f"Setting hw breakpoint")
+            #                 print(f"This is our thread: {pEvent.dwThreadId}")
+            #                 add_hardware_breakpoint(#0x77C3C0A8, 
+            #                                         export_address,
+            #                                         0, 
+            #                                         win32debug.BREAK_ON_EXECUTION, 
+            #                                         win32debug.WATCH_BYTE)
+
         # Not our breakpoint don't handle
         print(f"Not our breakpoint at {hex(exception_address)}")
         dwStatus = win32types.DBG_EXCEPTION_NOT_HANDLED
@@ -186,19 +233,58 @@ def handle_software_breakpoint(pEvent):
 
 def handle_hardware_breakpoint(pEvent):
     exception_address = pEvent.u.Exception.ExceptionRecord.ExceptionAddress
-    if exception_address in hardware_breakpoint_table.keys():
-        # Handle our breakpoint
-        print(f"Hardware Breakpoint hit at {hex(exception_address)}")
-        dwStatus = win32types.DBG_CONTINUE
-    else:
-        # Not our breakpoint don't handle
-        print(f"Not our hardware breakpoint at {hex(exception_address)}")
-        dwStatus = win32types.DBG_EXCEPTION_NOT_HANDLED
-    return dwStatus
+    for current_hwbp_reg_index in hardware_breakpoint_table.keys():
+        current_hwbp_reg = hardware_breakpoint_table[current_hwbp_reg_index]
+        if current_hwbp_reg.get('address', None) == exception_address:
+            # Handle our breakpoint
+            print(f"Hardware breakpoint hit at {hex(exception_address)}")
+            return win32types.DBG_CONTINUE
+
+    # Not our breakpoint don't handle
+    print(f"Not our hardware breakpoint at {hex(exception_address)}")
+    return win32types.DBG_EXCEPTION_NOT_HANDLED
+
+
+
+def handle_new_thread(pEvent):
+    global process_threads
+    thread_id = pEvent.dwThreadId
+    # add thread id to thread tracker
+    process_threads.append(thread_id)
+    # TODO: add any existing hardware bp to the thread
+    for current_bp_reg_index in hardware_breakpoint_table.keys():
+        current_bp_reg = hardware_breakpoint_table[current_bp_reg_index]
+        print(f"Set hardware breakpoint for new thread {thread_id} at {hex(current_bp_reg.get('address',None))}")
+        # Get a thread handle
+        hThread = win32process.OpenThread(win32types.THREAD_ALL_ACCESS, False, thread_id)
+        # Get the thread context
+        context = win32process.GetThreadContext(hThread)
+        # Set debug regsiters
+        # TODO ******
+        # https://bitbucket.org/mrexodia/enigmahwid/src/master/hwbp.cpp
+        # Assumptions
+        # - set the dr0-3 register with bp address
+        # - set dr7 struct[dr0-3] with MODE_LOCAL, bp size, bp type
+        #print(context)
+        win32debug.DebugRegister.set_bp(context, 
+                                        current_bp_reg_index, 
+                                        current_bp_reg.get('address'), 
+                                        current_bp_reg.get('type'), 
+                                        current_bp_reg.get('size'))
+        set_context_status = win32process.SetThreadContext(hThread, context)
+        # Close our thread handle
+        win32process.CloseHandle(hThread)
+
+
+def handle_exit_thread(pEvent):
+    global process_threads
+    thread_id = pEvent.dwThreadId
+    # remove thread id from tracker
+    process_threads.remove(thread_id)
 
 
 def main():
-    global target_handl, target_pid
+    global target_handl, target_pid, process_threads
     # Get target path
     target_path = sys.argv[1]
     print(f"Debugging:{target_path}")
@@ -229,6 +315,7 @@ def main():
     hProcess = pProcessInfo.hProcess
     target_handl = hProcess
     target_pid = pProcessInfo.dwProcessId
+    process_threads.append(pProcessInfo.dwThreadId)
     print(f"Process started with PID:{pProcessInfo.dwProcessId}")
     print(f"Press ENTER to quit debug loop...")
 
@@ -292,8 +379,10 @@ def main():
                 print(f"CREATE_PROCESS_DEBUG_EVENT")
             elif pEvent.dwDebugEventCode == win32types.CREATE_THREAD_DEBUG_EVENT:
                 print(f"CREATE_THREAD_DEBUG_EVENT")
+                handle_new_thread(pEvent)
             elif pEvent.dwDebugEventCode == win32types.EXIT_THREAD_DEBUG_EVENT:
                 print(f"EXIT_THREAD_DEBUG_EVENT")
+                handle_exit_thread(pEvent)
             elif pEvent.dwDebugEventCode == win32types.UNLOAD_DLL_DEBUG_EVENT:
                 print(f"UNLOAD_DLL_DEBUG_EVENT")
                 dwStatus = handle_unload_dll(pEvent)
