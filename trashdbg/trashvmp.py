@@ -11,7 +11,19 @@ import win32process
 import win32memory
 import win32debug
 
+################################################################################################
+## Steps for dumping VMP
+# 1 - set bp on entrypoint and run until hit
+# 2 - on bp -> set bp on kernelbase.dll:GetSystemTimeAsFileTime
+# 3 - on bp -> search .text for MSVC security cookie bytes 4E E6 40 BB
+# 4- use bytes to find __security_init_cookie function start and set hw bp
+# 5 - restart (re-set hw bp) 
+# 6 - on hw bp -> dump with bp as OEP (not real OEP but pretty close)
+################################################################################################
+
+
 # Globals for tracking our target
+target_path = None
 target_handl = None 
 target_pid = None
 # base_addres:{name, path, base, end, size, entrypoint, exports[]}
@@ -24,6 +36,11 @@ breakpoint_table = {}
 hardware_breakpoint_table = {}
 # thread tracker
 process_threads = []
+# save the entrypoint and image base
+target_entry_point = None 
+target_image_base = None
+# save address of GetSystemTimeAsFileTime
+address_GetSystemTimeAsFileTime = None
 
 # Global excpetion for our debugger
 class TrashDBGError(Exception):
@@ -98,6 +115,50 @@ def remove_hardware_breakpoint(bp_reg_index):
     return True
 
 
+def handle_create_process(pEvent):
+    global target_entry_point, target_image_base
+    # class CREATE_PROCESS_DEBUG_INFO(Structure):
+    # _fields_ = [
+    #     ('hFile',                   HANDLE),
+    #     ('hProcess',                HANDLE),
+    #     ('hThread',                 HANDLE),
+    #     ('lpBaseOfImage',           LPVOID),
+    #     ('dwDebugInfoFileOffset',   DWORD),
+    #     ('nDebugInfoSize',          DWORD),
+    #     ('lpThreadLocalBase',       LPVOID),
+    #     ('lpStartAddress',          LPVOID),
+    #     ('lpImageName',             LPVOID),
+    #     ('fUnicode',                WORD),
+    # ]
+    # use the file handle to get the file name
+    file_path_buffer_size = win32types.MAX_PATH
+    file_path_buffer = ctypes.create_unicode_buffer(u"", win32types.MAX_PATH + 1)
+    ret = ctypes.windll.kernel32.GetFinalPathNameByHandleW(
+                                                              pEvent.u.CreateProcessInfo.hFile, # [in]  HANDLE hFile,
+                                                              file_path_buffer,                 # [out] LPWSTR lpszFilePath,
+                                                              file_path_buffer_size,            # [in]  DWORD  cchFilePath,
+                                                              win32types.FILE_NAME_NORMALIZED,  # [in]  DWORD  dwFlags
+                                                            )
+    # Close our file handle
+    win32process.CloseHandle(pEvent.u.CreateProcessInfo.hFile)
+    if not ret:
+        print(f"Error CREATE_PROCESS_DEBUG_INFO: GetFinalPathNameByHandleW failed with {ctypes.WinError().strerror}")
+        return
+    target_path = file_path_buffer.value
+    # Populate our global tracking for the entrypoint and base
+    target_entry_point = pEvent.u.CreateProcessInfo.lpStartAddress 
+    target_image_base = pEvent.u.CreateProcessInfo.lpBaseOfImage
+
+    # Print some info about the new process
+    print(f"\tTarget Path: {target_path}")
+    print(f"\tImage Base: {hex(pEvent.u.CreateProcessInfo.lpBaseOfImage)}")
+    print(f"\tEntry Point: {hex(pEvent.u.CreateProcessInfo.lpStartAddress)}")
+    ## VMP dump step 1 - bp on entrypoint
+    bp_set_status = add_software_breakpoint(pEvent.u.CreateProcessInfo.lpStartAddress)
+    print(f"VMP STEP 1 -- Setting breakpoint on entry point: {hex(target_entry_point)}")
+
+
+
 def handle_load_dll(pEvent):
     global target_modules
 
@@ -154,23 +215,23 @@ def handle_load_dll(pEvent):
         print(f"Error reading loaded DLL at base {hex(pEvent.u.LoadDll.lpBaseOfDll)}: {e}")
     # TEST: If the module is ntdll then add a bp on ZwWriteFile
     # Find ntdll
-    if dll_name == 'ntdll.dll':
-        for module_address in target_modules.keys():
-            if target_modules[module_address].get('name','') == 'ntdll.dll':
-                exports =  target_modules[module_address].get('exports',[])
-                for export in exports:
-                    if b'ZwWriteFile'.lower() == export.get('name', b'').lower():
-                        export_address = export.get('address', None)
-                        if export_address is None:
-                            raise TrashDBGError(f"Export address for ZwWriteFile is None")
-                        # print("Adding bp on ZwWriteFile")
-                        # bp_set_status = add_software_breakpoint(export_address)
-                        print(f"Setting hw breakpoint")
-                        add_hardware_breakpoint(#0x77C3C0A8, 
-                                                export_address,
-                                                0, 
-                                                win32debug.BREAK_ON_EXECUTION, 
-                                                win32debug.WATCH_BYTE)
+    # if dll_name == 'ntdll.dll':
+    #     for module_address in target_modules.keys():
+    #         if target_modules[module_address].get('name','') == 'ntdll.dll':
+    #             exports =  target_modules[module_address].get('exports',[])
+    #             for export in exports:
+    #                 if b'ZwWriteFile'.lower() == export.get('name', b'').lower():
+    #                     export_address = export.get('address', None)
+    #                     if export_address is None:
+    #                         raise TrashDBGError(f"Export address for ZwWriteFile is None")
+    #                     # print("Adding bp on ZwWriteFile")
+    #                     # bp_set_status = add_software_breakpoint(export_address)
+    #                     print(f"Setting hw breakpoint")
+    #                     add_hardware_breakpoint(#0x77C3C0A8, 
+    #                                             export_address,
+    #                                             0, 
+    #                                             win32debug.BREAK_ON_EXECUTION, 
+    #                                             win32debug.WATCH_BYTE)
     return win32types.DBG_CONTINUE
 
 
@@ -187,6 +248,7 @@ def handle_unload_dll(pEvent):
 
 
 def handle_software_breakpoint(pEvent):
+    global address_GetSystemTimeAsFileTime
     exception_address = pEvent.u.Exception.ExceptionRecord.ExceptionAddress
     if exception_address in breakpoint_table.keys():
         # Handle our breakpoint
@@ -202,6 +264,69 @@ def handle_software_breakpoint(pEvent):
         # Set EIP back one byte for the bp
         context.Eip = context.Eip - 1
         set_context_status = win32process.SetThreadContext(hThread, context)
+        # Check if this is the entrypoint bp
+        if exception_address == target_entry_point:
+            ## VMP unpacking step 2 - set bp on kernelbase.dll:GetSystemTimeAsFileTime
+            # target_modules[dll_base_address] = {'name':dll_name, 
+            #                                 'path':dll_path, 
+            #                                 'base':dll_base_address, 
+            #                                 'end_address':dll_end_address,
+            #                                 'size':dll_virtual_size,
+            #                                 'entrypoint':dll_entrypoint, 
+            #                                 'exports':exports}
+            print(f"Hit entry point breakpoint")
+            # Find the GetSystemTimeAsFileTime address in kernelbase
+            for dll_base_address in target_modules:
+                if target_modules[dll_base_address].get('name','').lower() == 'kernelbase.dll'.lower():
+                    # Loop though the exports and find GetSystemTimeAsFileTime
+                    kernelbase_exports = target_modules[dll_base_address].get('exports',[])
+                    for export in kernelbase_exports:
+                        #{'name':export_name, 'ord':export_ord, 'address':export_address}
+                        if export.get('name',b'').lower() == b'GetSystemTimeAsFileTime'.lower():
+                            print("found GetSystemTimeAsFileTime")
+                            # Set bp 
+                            address_GetSystemTimeAsFileTime = export.get('address',None)
+                            bp_set_status = add_software_breakpoint(address_GetSystemTimeAsFileTime)
+                            print(f"VMP STEP 2 -- Setting breakpoint on GetSystemTimeAsFileTime: {hex(address_GetSystemTimeAsFileTime)}")
+                            break
+        # Check if this is the GetSystemTimeAsFileTime
+        if exception_address == address_GetSystemTimeAsFileTime:
+            # VMP STEP 3 - search .text for MSVC security cookie bytes 4E E6 40 BB
+            # Parse the target PE header to get info about text section
+            target_pe = pefile.PE(target_path, fast_load=True)
+            target_text_va = None
+            target_text_size = None 
+            for s in target_pe.sections:
+                if b'.text' in s.Name:
+                    target_text_va = s.VirtualAddress + target_image_base
+                    target_text_size = s.Misc_VirtualSize
+            # Check to make sure we have the text info
+            if target_text_va is None:
+                raise TrashDBGError(f"Can't find .text section info for target")
+            # Read in the .text memory 
+            text_memory = win32memory.read(target_handl, target_text_va, target_text_size)
+            # Find MSVC security cookie value
+            security_cookie_offset = text_memory.find(b'\x4E\xE6\x40\xBB')
+            if security_cookie_offset == -1:
+                raise TrashDBGError(f"Can't find the security cookie in the .text section")
+            security_cookie_va = target_text_va + security_cookie_offset
+            # DEBUG print some info
+            print(f"*** We hit bp on GetSystemTimeAsFileTime")
+            print(f"*** We found the security cookie at {hex(security_cookie_va)}")
+            # Create a fake OEP in the middle of the security cookie init 
+            # One byte behind our cookie to account for the mov instruction
+            fake_oep = security_cookie_va - 1
+            # Use vmp dump tool to dump our target
+            import subprocess
+            print(f"Dump process {target_pid}!!")
+            output = subprocess.call(["VMPImportFixer.exe", "-p", f"{target_pid}"])
+            print(f"LOL DONE!!")
+            sys.exit(0)
+
+
+
+
+        # Remove and continue
         if bp_info.get("singleshot", True):
             # This is a single shot bp so remove it
             # Restore original byte
@@ -277,8 +402,6 @@ def handle_hardware_breakpoint(pEvent):
 
    
 
-
-
 def handle_new_thread(pEvent):
     global process_threads
     thread_id = pEvent.dwThreadId
@@ -317,7 +440,7 @@ def handle_exit_thread(pEvent):
 
 
 def main():
-    global target_handl, target_pid, process_threads
+    global target_handl, target_pid, process_threads, target_path
     # Get target path
     target_path = sys.argv[1]
     print(f"Debugging:{target_path}")
@@ -410,6 +533,7 @@ def main():
                 break
             elif pEvent.dwDebugEventCode == win32types.CREATE_PROCESS_DEBUG_EVENT:
                 print(f"CREATE_PROCESS_DEBUG_EVENT")
+                handle_create_process(pEvent)
             elif pEvent.dwDebugEventCode == win32types.CREATE_THREAD_DEBUG_EVENT:
                 print(f"CREATE_THREAD_DEBUG_EVENT")
                 handle_new_thread(pEvent)
