@@ -14,6 +14,17 @@ Much of the code in this project is heavily copy-pasted from multiple sources on
 - [Fastir Collector (@SekoiaLab)](https://github.com/SekoiaLab/Fastir_Collector/blob/master/memory/mem.py)
 - [StackOverflow "tasklist does not list all Modules in 64-systems"](https://stackoverflow.com/questions/17474574/tasklist-does-not-list-all-modules-in-64-systems/17477833#17477833)
 - [StackOverflow "How to enum modules in a 64bit process from a 32bit WOW process"](https://stackoverflow.com/questions/3801517/how-to-enum-modules-in-a-64bit-process-from-a-32bit-wow-process)
+- [EnigmaHWID - hardware breakpoint (@mrexodia)](https://bitbucket.org/mrexodia/enigmahwid/src/master/hwbp.cpp)
+
+## Notes
+### System Breakpoint
+The "system breakpoint" is set automaticall for a debugged process by `ntdll:LdrpDoDebuggerBreak`. We can receive this in our debugger as a software breakpoint event but we need to be careful... the context debug registers are restored in ntdll after this bp so we cannot set a hardware breakpoint from here it will be cleared!
+
+![oS2S6R9](https://user-images.githubusercontent.com/5906222/153781429-b65d476d-9385-4191-abf9-7b0d6465f8ec.png)
+
+### Hardware Breakpoints
+The hardware breakpoint dr registers are set in thread specific context so it is possible to set different hw bp per thread. In practice this is not usually what we want as an analyst -- we want to set a hw bp that fires for all threads. To accomplish this we needed to add some helper methods that track all of the process threads. When a new hw bp is added it is added to all threads, and when a new thread is created the hw bps are added to it.
+
 
 ## No PRs
 Because this project is meant to be a community effort on stream we won’t be accepting PRs. Aside from some maintenance/cleanup **all coding will be done on-stream**. If you have feature requests or suggestions leave your feedback as an Issue or come chat with us on [**Discord**](https://discord.gg/UWdMC3W2qn).
